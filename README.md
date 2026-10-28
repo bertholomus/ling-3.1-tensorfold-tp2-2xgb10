@@ -1,57 +1,49 @@
-# Ling-3.1-flash on 2× DGX Spark (GB10) — our TensorFold TP2 engine
+# Ling-3.1-flash-1019 on 2× DGX Spark (GB10) — our TensorFold TP2 engine
 
-**Bertholomus AI recipe: inclusionAI's Ling-3.1-flash served tensor-parallel over two NVIDIA DGX Spark / GB10 nodes by
-the model family we wrote for [TensorFold](https://github.com/ashhart/TensorFold) (by ashhart), with a 196,608-token
-window and decoding drafted by the model's own MTP layer.**
+**Bertholomus AI recipe: inclusionAI's Ling-3.1-flash-1019 served tensor-parallel over two NVIDIA DGX Spark / GB10
+nodes by the model family we wrote for [TensorFold](https://github.com/ashhart/TensorFold) (by ashhart), with the
+262,144-token window of the model's config and decoding drafted by the model's own MTP layer.**
 
 > **Weights:** our EXL3 conversion (3.03 bits per weight) of
-> [inclusionAI/Ling-3.1-flash](https://huggingface.co/inclusionAI/Ling-3.1-flash) (MIT) at revision `7b864daa`, made
-> with the recipe in [`conversion/`](conversion/), is on Hugging Face as
-> [bertholomus/Ling-3.1-flash-EXL3-3.03bpw](https://huggingface.co/bertholomus/Ling-3.1-flash-EXL3-3.03bpw) (220.6 GB).
+> [inclusionAI/Ling-3.1-flash-1019](https://huggingface.co/inclusionAI/Ling-3.1-flash-1019) (MIT) at revision
+> `dddfee4b`, made with the recipe in [`conversion/`](conversion/), is on Hugging Face as
+> [bertholomus/Ling-3.1-flash-1019-EXL3-3.03bpw](https://huggingface.co/bertholomus/Ling-3.1-flash-1019-EXL3-3.03bpw) (220.6 GB).
 > [Get the weights](#get-the-weights) downloads it; [Make the weights](#make-the-weights) makes it from the original.
 
-**Engine:** commit `0441f2ac` on
+**Engine:** commit `72f16e48` on
 [bertholomus/TensorFold, branch `ling-3.1-tp2`](https://github.com/bertholomus/TensorFold/tree/ling-3.1-tp2):
 Bertholomus AI's `bailing_v3` family on upstream TensorFold v0.6.6's Python CUDA engine, on top of our GLM-5.3 engine
 line (`glm-dsa-tp4`). It holds the code we serve and measured; only our internal notes, paths and one internal script
 are taken out. The model math follows inclusionAI's modeling code for Ling-3.1-flash (`modeling_bailing_moe_v3.py`,
 Apache-2.0).
 
-Ling-3.1-flash (`BailingMoeV3ForCausalLM`) has 72 layers: 63 with KDA linear attention and 9 with gated MLA (layers 7,
+Ling-3.1-flash-1019 is a later checkpoint of Ling-3.1-flash with the same architecture: every tensor has the same name,
+dtype and shape. `BailingMoeV3ForCausalLM` has 72 layers: 63 with KDA linear attention and 9 with gated MLA (layers 7,
 15, …, 71); 4 dense MLP layers, then 68 mixture-of-experts layers with 512 routed experts (8 active) and a shared
 expert; and one MTP layer. Its model card gives 560B total and 25B active parameters.
 
-## v0.1.1 (2026-10-28)
+## v0.2.0 (2026-10-28): Ling-3.1-flash-1019 with its native 262K window
 
-Engine `0441f2ac`: a reply that thinks keeps part of `max_tokens` for its answer, so it can no longer use up its
-reply thinking and end with an empty answer; see [Thinking and max_tokens](#thinking-and-max_tokens). The serve line
-in [Run it](#run-it) now names the reserve and `--max-tokens 4096`, the engine's defaults. The weights, the settings
-and the numbers under v0.1.0 are unchanged: a reply that closes its own thinking within its limit is the same, token
-for token. The checks are under [Thinking and max_tokens](#thinking-and-max_tokens).
+Engine `72f16e48` with `--context 262144`: the model's native 262,144-token window, MTP drafting on (the default),
+one request at a time, on our 3.03 bpw conversion of the 1019 checkpoint (made as v0.1.0's was, with the same
+widths). Two memory settings new in this engine, `TF_LING_SHARED_SCRATCH=1` and `TF_LING_EMBED_SPLIT=1`, free about
+1.26 GiB a node, so the larger window keeps more memory free than v0.1.0's 192K did; neither changes the output.
+A reply that thinks keeps part of `max_tokens` for its answer ([Thinking and max_tokens](#thinking-and-max_tokens)).
 
-## v0.1.0 (2026-10-25, first release)
-
-Engine `ef914199` with `--context 196608`: a 192K window, MTP drafting on (the default), one request at a time.
 Measured on two GB10 nodes (TP2) joined by a direct RoCE link, at the settings in [Run it](#run-it), with our own
-client: greedy (temperature 0), thinking on, one run per row unless noted.
+client: greedy (temperature 0), one run per row unless noted.
 
 Drafting does not change the reply: drafted and serial decoding give the same tokens on fresh prompts (6 of 6 test
-prompts, and 2 of 2 replies that decode across the cache's 512-key chunk boundaries).
+prompts, and the replies that decode across the cache's 512-key chunk boundaries at every draft depth).
 
 **Decode** (tok/s after the first token):
 
-| Prompt tokens | Reply tokens | Drafted | Drafts accepted | Serial |
+| Prompt tokens | Reply tokens | Drafted (3 runs) | Drafts accepted | Serial (2 runs) |
 |---|---|---|---|---|
-| 30-33 (4 prompts) | 35-128 | 40.0-47.7 | 69-82% | 23.6-24.1 |
-| 1,012 | 167 | 47.9 | 114 / 138 | 23.9 |
-| 2,222 | 60 | 40.9 | 36 / 51 | 23.8 |
-| 6,623 | 60 | 39.8 | 36 / 54 | 23.9 |
-| 8,121 | 640 | 47.3 | 441 / 529 | 23.7 |
-| 31,361 | 69 | 40.3 | 42 / 55 | 22.5 ¹ |
-| 121,778 | 61 | 32.2 | 35 / 51 | |
-| 191,078 | 101 | 29.8 | 60 / 89 | |
-
-¹ One 60-token reply that reused the drafted run's prompt.
+| 72 (thinking off) | 256 | 35.1-36.9 | 128-137 / 209-216 | 23.9-24.1 |
+| 2,222 | 60-88 | 37.7-38.7 | 36 / 47, 54 / 70 | 22.9-23.0 |
+| 6,623 | 60-94 | 36.9-39.3 | 36 / 44, 58 / 77 | 22.5-23.6 |
+| 255,112 | 189 | 28.8-29.1 | 119 / 163 | |
 
 How fast drafted decoding runs depends on how many of the MTP layer's drafts the model accepts, which depends on the
 text. Sampled requests are drafted too (the server's defaults are temperature 1.0, top-k 20, top-p 0.95).
@@ -60,43 +52,47 @@ text. Sampled requests are drafted too (the server's defaults are temperature 1.
 
 | Prompt tokens | Time | tok/s |
 |---|---|---|
-| 1,012 | 1.66-1.70 s | 595-610 |
-| 2,222 | 3.48-3.50 s (3.89 s the first time) | 635-639 |
-| 6,623 | 9.61-9.67 s | 685-689 |
-| 8,121 | 11.55-11.58 s | 701-703 |
-| 31,361 | 53.5 s | 587 |
-| 121,778 | 339.3 s (5.7 min) | 359 |
-| 191,078 | 685.6 s (11.4 min) | 279 |
+| 2,222 | 3.43-3.62 s | 614-648 |
+| 2,245 | 3.53 s | 638 |
+| 6,623 | 9.52-9.60 s | 690-696 |
+| 9,002 | 13.6 s | 662 |
+| 36,531 | 64.3 s | 568 |
+| 255,112 | 1,137 s (19.0 min) | 224 |
 
-A prompt that extends the previous request's prompt reuses it: the 6,623-token prompt sent again started in 0.07 s.
+A prompt that extends the previous request's prompt reuses it: the 255,112-token prompt sent again started in 0.10 s.
 
 **Memory** (each node has 123.79 GiB, shared by its CPU and GPU):
 
 | | Rank 0 | Rank 1 |
 |---|---|---|
-| GPU memory, weights loaded (PyTorch allocated) | 104.01 GiB | 104.01 GiB |
-| GPU memory, ready to serve (buffers, caches, graphs) | 108.36 GiB | 108.36 GiB |
-| Free (MemAvailable) after the weights load | 7.73 GiB | 7.82 GiB |
-| Free when ready to serve | 3.78 GiB | 2.90 GiB |
-| Lowest free while serving (our tests to 191K, then 2.5 h of use) | 2.08 GiB | 1.84 GiB |
+| GPU memory, weights loaded (PyTorch allocated) | 103.41 GiB | 103.41 GiB |
+| GPU memory, ready to serve (buffers, caches, graphs) | 107.96 GiB | 107.96 GiB |
+| Free (MemAvailable) after the weights load | 9.21 GiB | 8.31 GiB |
+| Free when ready to serve | 4.29 GiB | 2.94 GiB |
+| Lowest free while serving (the checks in this README, 30 minutes) | 2.11 GiB | 1.94 GiB |
 
-Start to ready: 235 s, with the weights read from each node's local disk.
+Start to ready: 237 s, with the weights read from each node's local disk.
 
-**Quality: the engine's arithmetic.** We compared the engine's next-token logits at every position of 40 prompts
-(passages and chat turns, 66,103 positions) with a reference forward of the same EXL3 weights: our PyTorch
-implementation of the model, written from inclusionAI's modeling code, with the weights decoded by exllamav3 and the
-KDA layers run by flash-linear-attention's kernels. The reference ran once in fp32 throughout and once with bf16
-activations:
+**Quality: the engine's arithmetic.** As for v0.1.0, we compared the engine's next-token logits at every position of
+the same 40 prompts (66,103 positions) with a reference forward of the same EXL3 weights, run once in fp32 throughout
+and once with bf16 activations:
 
 | | Top-1 agreement | Mean KL (reference ‖ tested) | Max KL |
 |---|---|---|---|
-| Engine vs the fp32 reference | 0.9723 | 0.0140 | 17.70 |
-| bf16 reference vs the fp32 reference | 0.9728 | 0.0123 | 16.06 |
-| Engine vs the bf16 reference | 0.9724 | 0.0133 | 12.16 |
+| Engine vs the fp32 reference | 0.9712 | 0.0132 | 8.44 |
+| bf16 reference vs the fp32 reference | 0.9726 | 0.0136 | 9.94 |
+| Engine vs the bf16 reference | 0.9715 | 0.0138 | 12.35 |
 
-So the engine is about as close to exact fp32 arithmetic as the same math with bf16 activations: its KL is 1.14 times
-as large, and its top-1 agreement is 0.0005 lower. These numbers measure arithmetic on the same quantized weights. How
+So the engine is as close to exact fp32 arithmetic as the same math with bf16 activations: its KL is 0.97 times as
+large, and its top-1 agreement is 0.0013 lower. These numbers measure arithmetic on the same quantized weights. How
 far the 3.03 bpw conversion is from the original FP8 model was not measured end to end.
+
+## Earlier releases
+
+v0.1.0 (2026-10-25) served the original Ling-3.1-flash (revision `7b864daa`, our conversion
+[bertholomus/Ling-3.1-flash-EXL3-3.03bpw](https://huggingface.co/bertholomus/Ling-3.1-flash-EXL3-3.03bpw)) with a 192K
+window on engine `ef914199`, and v0.1.1 (2026-10-28) added the answer reserve (engine `0441f2ac`). Their notes and
+numbers are in the README at the tags `v0.1.0` and `v0.1.1`.
 
 ## Get the weights
 
@@ -104,17 +100,17 @@ Our conversion on Hugging Face is the folder our served rank folders were split 
 and its `README.md` is our model card. Download it and the engine, then check and split the weights as in step 5:
 
 ```
-hf download bertholomus/Ling-3.1-flash-EXL3-3.03bpw --local-dir <EXL3_DIR>
+hf download bertholomus/Ling-3.1-flash-1019-EXL3-3.03bpw --local-dir <EXL3_DIR>
 git clone -b ling-3.1-tp2 https://github.com/bertholomus/TensorFold <TENSORFOLD>
 ```
 
 ## Make the weights
 
-1. Download [inclusionAI/Ling-3.1-flash](https://huggingface.co/inclusionAI/Ling-3.1-flash) at revision
-   `7b864daa2cedb1404e12bc52899def2d151a9719` (FP8, 535 GiB):
+1. Download [inclusionAI/Ling-3.1-flash-1019](https://huggingface.co/inclusionAI/Ling-3.1-flash-1019) at revision
+   `dddfee4bb43519a92761fbc5cefe3f0d3ff4aded` (FP8, 535 GiB):
 
    ```
-   hf download inclusionAI/Ling-3.1-flash --revision 7b864daa2cedb1404e12bc52899def2d151a9719 --local-dir <SRC>
+   hf download inclusionAI/Ling-3.1-flash-1019 --revision dddfee4bb43519a92761fbc5cefe3f0d3ff4aded --local-dir <SRC>
    ```
 
 2. Write a BF16 copy for the converter to read (1,066 GiB; about 4 h on one GB10's CPU), and check it, with the
@@ -133,8 +129,7 @@ git clone -b ling-3.1-tp2 https://github.com/bertholomus/TensorFold <TENSORFOLD>
 
 3. Convert the BF16 copy with our exllamav3 branch
    [`ling-3.1`](https://github.com/bertholomus/exllamav3/tree/ling-3.1) (commit `13463cc9`: exllamav3 v1.5.3 plus
-   the Ling-3.1 module, the code our conversion ran), in `nvcr.io/nvidia/pytorch:26.07-py3`, with this repository
-   checked out at `<THIS_REPO>`:
+   the Ling-3.1 module), in `nvcr.io/nvidia/pytorch:26.07-py3`, with this repository checked out at `<THIS_REPO>`:
 
    ```
    git clone -b ling-3.1 https://github.com/bertholomus/exllamav3 <EXLLAMAV3>
@@ -147,7 +142,9 @@ git clone -b ling-3.1-tp2 https://github.com/bertholomus/TensorFold <TENSORFOLD>
    unquantized), output head 6, MTP layer 4; 3.03 bpw by the converter's count, with its default calibration (250
    rows of 2,048 tokens). NVIDIA's container sets `TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1`, which runs fp32 matrix
    products in TF32; our conversion ran without it, and the Ling module refuses to start while it is set. On one
-   GB10 the conversion took 29 h 14 min in one pass and wrote 220.6 GB in 35 shards.
+   GB10 a conversion takes about 29 hours (29 h 14 min for the earlier checkpoint) and writes 220.6 GB in 35 shards.
+   Ours of 1019 took 20 h 7 min with a second GB10 quantizing part of each layer for the first, through our own
+   converter code, which a byte-for-byte check showed writes the same tensors as one node alone.
 
 4. Put back the tensors the converter leaves unquantized, exactly as the BF16 copy has them:
 
@@ -158,7 +155,7 @@ git clone -b ling-3.1-tp2 https://github.com/bertholomus/TensorFold <TENSORFOLD>
    The converter stores those tensors (norms, the embedding, the router, `kv_b_proj`, the KDA's short convolutions,
    …) in its own dtype, some of them as F16. The restore writes back the BF16 copy's bytes and dtype, the three
    short convolutions as the one fused tensor the converter writes, and exits 0 only if every restored tensor reads
-   back equal. On our conversion it restored 646 tensors and found 494 already identical.
+   back equal. On our conversion it restored 646 tensors.
 
 5. Check the split, then split the weights into one folder per rank (~112 GB each), with the engine's `src/` on
    `PYTHONPATH`:
@@ -176,7 +173,7 @@ git clone -b ling-3.1-tp2 https://github.com/bertholomus/TensorFold <TENSORFOLD>
 ## Run it
 
 Two GB10 nodes with a direct RoCE link. On each node, a container of `nvcr.io/nvidia/pytorch:26.07-py3` started with
-`--gpus all --network host --ipc host --ulimit memlock=-1 --device /dev/infiniband`, the engine at `0441f2ac` in
+`--gpus all --network host --ipc host --ulimit memlock=-1 --device /dev/infiniband`, the engine at `72f16e48` in
 `<TENSORFOLD>`, the node's rank folder in `<RANK_DIR>` on local disk, and nothing else on the GPU.
 
 1. Once per container, build the engine's CUDA extensions with no model loaded:
@@ -189,11 +186,12 @@ Two GB10 nodes with a direct RoCE link. On each node, a container of `nvcr.io/nv
 4. Start both ranks (we start them within a second of each other), with `R` 0 on the head node and 1 on the other:
 
    ```
-   TENSORFOLD_MEMORY_RESERVE_GIB=4 TF_LING_CACHE_GIB=0 TF_LING_LATENT_MB=256 TF_LING_FILLED=1 TF_GLM_UNPACK_CACHE_MB=0 \
+   TENSORFOLD_MEMORY_RESERVE_GIB=4 TF_LING_CACHE_GIB=0 TF_LING_LATENT_MB=270 TF_LING_FILLED=1 TF_GLM_UNPACK_CACHE_MB=0 \
+   TF_LING_SHARED_SCRATCH=1 TF_LING_EMBED_SPLIT=1 \
    NCCL_BUFFSIZE=1048576 NCCL_MAX_NCHANNELS=4 MALLOC_ARENA_MAX=2 TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=0 \
    NCCL_IB_HCA=<HCA_PORT> NCCL_IB_GID_INDEX=5 NCCL_SOCKET_IFNAME=<IFACE> PYTHONPATH=<TENSORFOLD>/src \
    python3 -m tensorfold serve <RANK_DIR> --backend cuda --tp 2 --rank R --master <HEAD_IP> --master-port 29577 \
-     --host 127.0.0.1 --port 8322 --context 196608 \
+     --host 127.0.0.1 --port 8322 --context 262144 \
      --max-tokens 4096 --answer-reserve 0.25 --answer-reserve-min 1024
    ```
 
@@ -203,14 +201,22 @@ Two GB10 nodes with a direct RoCE link. On each node, a container of `nvcr.io/nv
 
 The settings:
 
-- `--context 196608`: the 192K window. Prompt and reply share it.
+- `--context 262144`: the 262,144 positions of the model's config (`max_position_embeddings`; inclusionAI's model
+  card names a 1M-token window, which this recipe does not run). Prompt and reply share it.
 - `--max-tokens 4096`: the reply length of a request that sends no `max_tokens` (it is held to the room the window
   has left).
 - `--answer-reserve 0.25 --answer-reserve-min 1024`: a reply that thinks keeps a quarter of its `max_tokens` (at least
   1,024 tokens, at most half) for the answer; see [Thinking and max_tokens](#thinking-and-max_tokens).
 - `TENSORFOLD_MEMORY_RESERVE_GIB=4`: the memory the start-up check keeps free.
 - `TF_LING_CACHE_GIB=0`: no memory for other conversations' prompts. The live conversation's prompt is still reused.
-- `TF_LING_LATENT_MB=256`: the latent attention's working memory; at 192K it works in blocks of 10 rows.
+- `TF_LING_LATENT_MB=270`: the latent attention's working memory; at 262K it works in blocks of 8 rows, the widest
+  window drafted decoding verifies (256 would cap it at 7).
+- `TF_LING_SHARED_SCRATCH=1`: the decode window, the MTP layer and the prompt chunks share one set of call-local
+  scratch (the latent attention's partials and the EXL3 layers' working buffers) instead of holding three; 0.66 GiB a
+  node at 262K.
+- `TF_LING_EMBED_SPLIT=1`: each node holds half of the embedding table and the two gather each token's row from the
+  node that holds it; 0.60 GiB a node, for one small gather over the link a forward (about 0.3% of a drafted round in
+  our runs).
 - `TF_LING_FILLED=1`: decoding reads only the filled 512-key chunks of the cache, not the whole window.
 - `TF_GLM_UNPACK_CACHE_MB=0`: no cache of unpacked weights for the prompt path, which never reuses an entry (0.375 GiB).
 - `NCCL_BUFFSIZE=1048576 NCCL_MAX_NCHANNELS=4`: smaller NCCL buffers and four channels save ~1.25 GiB a rank; in our
@@ -218,9 +224,10 @@ The settings:
 - `MALLOC_ARENA_MAX=2`: a smaller host heap.
 - `TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=0`: keeps fp32 matrix products in fp32 (NVIDIA's container sets it to 1).
 
-None of these changes the engine's output: a run of the 40 quality prompts with these settings (and latent blocks of
-9 rows, finer than 192K's 10) gave logits bit-identical to the run the quality numbers come from. The answer reserve
-changes only a reply that is still thinking at its limit.
+None of these changes the engine's output: the 40 quality prompts gave bit-identical logits with and without the
+shared scratch and the split embedding, and at a 192K window the server's 18 test replies with both were token for
+token the same as with v0.1.0's settings. The answer reserve changes only a reply that is still thinking at its
+limit.
 
 The draft depth adapts by default. A request with `"tf_policy": "0"` decodes serially (our serial rows used it), and
 `"tf_policy": "N"` drafts N tokens a round; `--mtp-drafts N` makes that the server's default.
@@ -229,7 +236,7 @@ Hosts and addresses are placeholders; substitute your own.
 
 ## Thinking and max_tokens
 
-Ling-3.1-flash thinks before it answers unless a request turns thinking off
+Ling-3.1-flash-1019 thinks before it answers unless a request turns thinking off
 (`"chat_template_kwargs": {"enable_thinking": false}`; on the Messages API it thinks only when the request
 enables `thinking`), and the thinking and the answer share the request's `max_tokens`. Without a limit of its
 own, a long thought can use up the whole reply and leave the answer empty.
@@ -262,9 +269,8 @@ To give a long thought more room, send a larger `max_tokens`. To stop thinking s
 `--answer-reserve R` sets the share (0.25, at most 0.5), `--answer-reserve-min N` the floor (1024), and
 `--answer-reserve 0` turns the reserve off.
 
-**Checked** with this engine on two GB10 nodes serving Ling-3.1-flash-1019 (a later checkpoint of this model with the
-same architecture) at a 262,144-token window: greedy, thinking on, `--max-tokens 4096 --answer-reserve 0.25
---answer-reserve-min 1024`. "Without" is the engine just before this change.
+**Checked** with this engine on two GB10 nodes at the settings in [Run it](#run-it): greedy, thinking on,
+`--max-tokens 4096 --answer-reserve 0.25 --answer-reserve-min 1024`. "Without" is the engine just before this change.
 
 | Check | Without the reserve | With it |
 |---|---|---|
@@ -281,17 +287,12 @@ after 349. A reply that closes its own thinking took the same time, within 2 %.
 
 ## Limits
 
-- **Memory margin.** The weights take 104 GiB of each node's 123.79 GiB, and the server's buffers, caches and graphs
-  4.4 GiB more, so a node keeps only ~2 GiB free while serving (lowest 1.84 GiB). Nothing else can use the GPU, and
-  the nodes' own memory use has to stay small. Our watchdog stops the server at 1.5 GiB.
-- **192K is the ceiling with drafting.** The model's config allows 262,144 positions. A 262,144-token window needs
-  about 0.8 GiB more per node than 192K, which would leave rank 1 under the watchdog's 1.5 GiB. Without the MTP layer
-  (`TF_LING_MTP=0`) 262,144 should fit by our memory estimate (we have not run it), but decoding then runs at serial
-  speed (22-24 tok/s instead of 30-48).
-- **Long prompts are slow.** Prompt speed peaks at ~700 tok/s around 8K tokens and falls with length: 587 tok/s at
-  31K, 359 at 122K and 279 at 191K, where the first token takes 11.4 minutes. The nine MLA layers attend over the
-  whole prompt, so their share of the work grows with its length. `TF_LING_PREFILL_ROWS` sets other prompt chunk
-  sizes, but it changes the output bits, so this recipe keeps the default 2,048 rows.
+- **Memory margin.** The weights take 103.4 GiB of each node's 123.79 GiB, and the server's buffers, caches and graphs
+  4.6 GiB more, so a node keeps only ~2-4 GiB free while serving (lowest 1.94 GiB in our checks). Nothing else can use
+  the GPU, and the nodes' own memory use has to stay small. Our watchdog stops the server at 1.5 GiB.
+- **Long prompts are slow.** The nine MLA layers attend over the whole prompt, so their share of the work grows with
+  its length: a 255,113-token prompt took 18.8 minutes to its first token (226 tok/s). `TF_LING_PREFILL_ROWS` sets
+  other prompt chunk sizes, but it changes the output bits, so this recipe keeps the default 2,048 rows.
 - **One request at a time.** The engine decodes one request at a time; the others wait their turn. Serve without
   `--parallel`.
 - **A repeated prompt can answer differently.** When a prompt reuses the previous one, only its new tokens are
@@ -299,13 +300,13 @@ after 349. A reply that closes its own thinking took the same time, within 2 %.
   slightly from a fresh run's, and so can the reply.
 - **Quality against the original model** was not measured end to end; the numbers above compare the engine with a
   reference forward of the same 3.03 bpw weights.
-- **Start-up** takes ~4 minutes, and the CUDA extensions must be built first (step 1 of Run it).
+- **Start-up** takes ~5 minutes, and the CUDA extensions must be built first (step 1 of Run it).
 - **Tested** only with our conversion, on two GB10 nodes joined by one direct RoCE link, in
   `nvcr.io/nvidia/pytorch:26.07-py3`.
 
 ## Credits
 
-- **inclusionAI** — Ling-3.1-flash and its weights (MIT), and its modeling code (`modeling_bailing_moe_v3.py`,
+- **inclusionAI** — Ling-3.1-flash-1019 and its weights (MIT), and its modeling code (`modeling_bailing_moe_v3.py`,
   Apache-2.0, Copyright 2025 Antgroup and The HuggingFace Inc. team).
 - **ashhart** — [TensorFold](https://github.com/ashhart/TensorFold) (Apache-2.0), the engine this family plugs into.
 - **turboderp** — [EXL3 / exllamav3](https://github.com/turboderp-org/exllamav3) (MIT), the weight format and the
