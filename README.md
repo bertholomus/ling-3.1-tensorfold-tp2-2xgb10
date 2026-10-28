@@ -10,7 +10,7 @@ window and decoding drafted by the model's own MTP layer.**
 > [bertholomus/Ling-3.1-flash-EXL3-3.03bpw](https://huggingface.co/bertholomus/Ling-3.1-flash-EXL3-3.03bpw) (220.6 GB).
 > [Get the weights](#get-the-weights) downloads it; [Make the weights](#make-the-weights) makes it from the original.
 
-**Engine:** commit `ef914199` on
+**Engine:** commit `0441f2ac` on
 [bertholomus/TensorFold, branch `ling-3.1-tp2`](https://github.com/bertholomus/TensorFold/tree/ling-3.1-tp2):
 Bertholomus AI's `bailing_v3` family on upstream TensorFold v0.6.6's Python CUDA engine, on top of our GLM-5.3 engine
 line (`glm-dsa-tp4`). It holds the code we serve and measured; only our internal notes, paths and one internal script
@@ -20,6 +20,14 @@ Apache-2.0).
 Ling-3.1-flash (`BailingMoeV3ForCausalLM`) has 72 layers: 63 with KDA linear attention and 9 with gated MLA (layers 7,
 15, …, 71); 4 dense MLP layers, then 68 mixture-of-experts layers with 512 routed experts (8 active) and a shared
 expert; and one MTP layer. Its model card gives 560B total and 25B active parameters.
+
+## v0.1.1 (2026-10-28)
+
+Engine `0441f2ac`: a reply that thinks keeps part of `max_tokens` for its answer, so it can no longer use up its
+reply thinking and end with an empty answer; see [Thinking and max_tokens](#thinking-and-max_tokens). The serve line
+in [Run it](#run-it) now names the reserve and `--max-tokens 4096`, the engine's defaults. The weights, the settings
+and the numbers under v0.1.0 are unchanged: a reply that closes its own thinking within its limit is the same, token
+for token. The checks are under [Thinking and max_tokens](#thinking-and-max_tokens).
 
 ## v0.1.0 (2026-10-25, first release)
 
@@ -168,7 +176,7 @@ git clone -b ling-3.1-tp2 https://github.com/bertholomus/TensorFold <TENSORFOLD>
 ## Run it
 
 Two GB10 nodes with a direct RoCE link. On each node, a container of `nvcr.io/nvidia/pytorch:26.07-py3` started with
-`--gpus all --network host --ipc host --ulimit memlock=-1 --device /dev/infiniband`, the engine at `ef914199` in
+`--gpus all --network host --ipc host --ulimit memlock=-1 --device /dev/infiniband`, the engine at `0441f2ac` in
 `<TENSORFOLD>`, the node's rank folder in `<RANK_DIR>` on local disk, and nothing else on the GPU.
 
 1. Once per container, build the engine's CUDA extensions with no model loaded:
@@ -185,7 +193,8 @@ Two GB10 nodes with a direct RoCE link. On each node, a container of `nvcr.io/nv
    NCCL_BUFFSIZE=1048576 NCCL_MAX_NCHANNELS=4 MALLOC_ARENA_MAX=2 TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=0 \
    NCCL_IB_HCA=<HCA_PORT> NCCL_IB_GID_INDEX=5 NCCL_SOCKET_IFNAME=<IFACE> PYTHONPATH=<TENSORFOLD>/src \
    python3 -m tensorfold serve <RANK_DIR> --backend cuda --tp 2 --rank R --master <HEAD_IP> --master-port 29577 \
-     --host 127.0.0.1 --port 8322 --context 196608
+     --host 127.0.0.1 --port 8322 --context 196608 \
+     --max-tokens 4096 --answer-reserve 0.25 --answer-reserve-min 1024
    ```
 
    Rank 0 serves an OpenAI-compatible API at `http://127.0.0.1:8322/v1`; rank 1 follows it.
@@ -195,6 +204,10 @@ Two GB10 nodes with a direct RoCE link. On each node, a container of `nvcr.io/nv
 The settings:
 
 - `--context 196608`: the 192K window. Prompt and reply share it.
+- `--max-tokens 4096`: the reply length of a request that sends no `max_tokens` (it is held to the room the window
+  has left).
+- `--answer-reserve 0.25 --answer-reserve-min 1024`: a reply that thinks keeps a quarter of its `max_tokens` (at least
+  1,024 tokens, at most half) for the answer; see [Thinking and max_tokens](#thinking-and-max_tokens).
 - `TENSORFOLD_MEMORY_RESERVE_GIB=4`: the memory the start-up check keeps free.
 - `TF_LING_CACHE_GIB=0`: no memory for other conversations' prompts. The live conversation's prompt is still reused.
 - `TF_LING_LATENT_MB=256`: the latent attention's working memory; at 192K it works in blocks of 10 rows.
@@ -206,12 +219,65 @@ The settings:
 - `TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=0`: keeps fp32 matrix products in fp32 (NVIDIA's container sets it to 1).
 
 None of these changes the engine's output: a run of the 40 quality prompts with these settings (and latent blocks of
-9 rows, finer than 192K's 10) gave logits bit-identical to the run the quality numbers come from.
+9 rows, finer than 192K's 10) gave logits bit-identical to the run the quality numbers come from. The answer reserve
+changes only a reply that is still thinking at its limit.
 
 The draft depth adapts by default. A request with `"tf_policy": "0"` decodes serially (our serial rows used it), and
 `"tf_policy": "N"` drafts N tokens a round; `--mtp-drafts N` makes that the server's default.
 
 Hosts and addresses are placeholders; substitute your own.
+
+## Thinking and max_tokens
+
+Ling-3.1-flash thinks before it answers unless a request turns thinking off
+(`"chat_template_kwargs": {"enable_thinking": false}`; on the Messages API it thinks only when the request
+enables `thinking`), and the thinking and the answer share the request's `max_tokens`. Without a limit of its
+own, a long thought can use up the whole reply and leave the answer empty.
+
+So the server keeps part of `max_tokens` for the answer: a reply still thinking at `max_tokens` minus that reserve has
+its thinking closed there (the server writes `</think>`), and the model answers in the tokens that are left. The
+reserve is a quarter of `max_tokens`, at least 1,024 tokens and at most half of it:
+
+| `max_tokens` | Thinks for at most | Kept for the answer |
+|---|---|---|
+| 128 | 64 | 64 |
+| 512 | 256 | 256 |
+| 2,048 | 1,024 | 1,024 |
+| 4,096 (a request without `max_tokens`) | 3,072 | 1,024 |
+| 8,192 | 6,144 | 2,048 |
+| 32,768 | 24,576 | 8,192 |
+
+If the model would end the reply right after the close, before the first word of an answer, the server starts the
+answer with "Answer:" instead, once; in our checks the model always went on to answer after the close (38 of 38
+replies closed after 32 or 64 thinking tokens), so this has not been needed. The model can still call a tool after the
+close. A reply that closes its own thinking within the limit is not changed.
+
+A reply whose thinking the server closed says so: `usage.completion_tokens_details` carries `"reasoning_cut": true`
+beside `reasoning_tokens` (on the Messages API `usage.output_tokens_details.thinking_cut`, on the Responses API
+`usage.output_tokens_details.reasoning_cut`), the server's log line for the reply carries `think_cut=<n>`, and
+`finish_reason` stays what ended the reply.
+
+To give a long thought more room, send a larger `max_tokens`. To stop thinking sooner, send `thinking_budget`
+(Messages API: `thinking.budget_tokens`): a smaller budget wins, a larger one is held to the same limit. On the server,
+`--answer-reserve R` sets the share (0.25, at most 0.5), `--answer-reserve-min N` the floor (1024), and
+`--answer-reserve 0` turns the reserve off.
+
+**Checked** with this engine on two GB10 nodes serving Ling-3.1-flash-1019 (a later checkpoint of this model with the
+same architecture) at a 262,144-token window: greedy, thinking on, `--max-tokens 4096 --answer-reserve 0.25
+--answer-reserve-min 1024`. "Without" is the engine just before this change.
+
+| Check | Without the reserve | With it |
+|---|---|---|
+| A 255,112-token document with two questions about it, `max_tokens` 128 | an empty answer: all 128 tokens went to thinking | thinking closed after 64 tokens; the answer names both (the reply ends at 128 tokens) |
+| The same at `max_tokens` 512 and 4,096, and with no `max_tokens` | | the reply closes its own thinking (151-152 tokens) and names both |
+| 20 everyday prompts at `max_tokens` 128, 400 and 700 | 18 answer; 2 think for all 700 tokens | 20 answer; 9 have their thinking closed, and the other 11 are the same, token for token |
+| The same 20 at `max_tokens` 64 | 3 answer | 20 answer (19 closed) |
+| A coding agent's task with tools (list, read and write files, run the tests), `max_tokens` 8,192 | | 7 turns, each answers or calls a tool; the tests pass at the end |
+| One request each on the Messages API (`budget_tokens` 50 and 200, and without thinking), the Responses API and a streamed chat, `max_tokens` 256 | | each answers; usage marks the closed thinking |
+
+Closing the thought costs a prefill of the reply so far before the answer: a reply whose thinking was closed took
+0.1-0.3 s longer than a reply of the same length without the reserve after 32-64 thinking tokens, and 0.9 s longer
+after 349. A reply that closes its own thinking took the same time, within 2 %.
 
 ## Limits
 
